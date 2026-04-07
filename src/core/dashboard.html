@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="refresh" content="10">
+<title>QuantForce v3.3</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; color: #eee; font-family: monospace; padding: 16px; }
+h1 { color: #f90; margin-bottom: 16px; font-size: 1.2em; }
+.grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }
+.card { background: #1e1e1e; border-radius: 8px; padding: 16px; text-align: center; }
+.card .label { font-size: 0.75em; color: #aaa; margin-bottom: 8px; }
+.card .value { font-size: 1.6em; font-weight: bold; }
+.green { color: #0f0; }
+.red { color: #f44; }
+.yellow { color: #ff0; }
+table { width: 100%; border-collapse: collapse; background: #1e1e1e; border-radius: 8px; overflow: hidden; }
+th { background: #2a2a2a; padding: 10px; text-align: left; font-size: 0.8em; color: #aaa; }
+td { padding: 10px; font-size: 0.85em; border-top: 1px solid #2a2a2a; }
+.node-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; margin-bottom: 16px; }
+.node-card { background: #1e1e1e; border-radius: 6px; padding: 10px; text-align: center; }
+.node-card .name { font-size: 0.7em; color: #aaa; }
+.node-card .status { font-size: 1.2em; }
+</style>
+</head>
+<body>
+<h1>⚡ QuantForce v3.3 — 实时监控</h1>
+
+<div class="grid" id="stats">
+  <div class="card"><div class="label">Dispatcher</div><div class="value" id="dispatcher">...</div></div>
+  <div class="card"><div class="label">API</div><div class="value" id="api">...</div></div>
+  <div class="card"><div class="label">信号数</div><div class="value" id="sigcount">...</div></div>
+  <div class="card"><div class="label">最后更新</div><div class="value" style="font-size:0.9em" id="ts">...</div></div>
+</div>
+
+<div class="node-grid" id="nodes"></div>
+
+<table>
+  <thead><tr><th>Ticker</th><th>Score</th><th>RVOL</th><th>Price</th><th>VWAP</th><th>MACD</th><th>时间</th><th>来源</th></tr></thead>
+  <tbody id="signals"><tr><td colspan="8" style="text-align:center;color:#555">暂无信号</td></tr></tbody>
+</table>
+
+<script>
+const API = 'http://192.168.0.18:5800';
+
+async function update() {
+  try {
+    const [disp, health, nodes, sigs] = await Promise.all([
+      fetch(API+'/dispatcher/status').then(r=>r.json()),
+      fetch(API+'/health').then(r=>r.json()),
+      fetch(API+'/nodes').then(r=>r.json()),
+      fetch(API+'/signals').then(r=>r.json()),
+    ]);
+
+    const d = document.getElementById('dispatcher');
+    d.textContent = disp.status === 'active' ? '● ACTIVE' : '● DOWN';
+    d.className = 'value ' + (disp.status === 'active' ? 'green' : 'red');
+
+    document.getElementById('api').textContent = '● OK';
+    document.getElementById('api').className = 'value green';
+    document.getElementById('sigcount').textContent = sigs.length;
+    document.getElementById('ts').textContent = new Date().toLocaleTimeString('zh');
+
+    const ng = document.getElementById('nodes');
+    ng.innerHTML = Object.entries(nodes).map(([name, info]) =>
+      `<div class="node-card">
+        <div class="name">${name}<br>${info.ip}</div>
+        <div class="status ${info.reachable ? 'green' : 'red'}">${info.reachable ? '✓' : '✗'}</div>
+      </div>`
+    ).join('');
+
+    const tb = document.getElementById('signals');
+    if (sigs.length === 0) {
+      tb.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#555">暂无信号</td></tr>';
+    } else {
+      tb.innerHTML = [...sigs].reverse().map(s =>
+        `<tr>
+          <td><b>${s.ticker}</b></td>
+          <td class="${s.score>=7.5?'green':'yellow'}">${s.score}</td>
+          <td>${s.rvol}</td>
+          <td>${s.price}</td>
+          <td>${s.vwap}</td>
+          <td>${s.macd}</td>
+          <td>${s.injected_at?.slice(11,19)||''}</td>
+          <td>${s.source||''}</td>
+        </tr>`
+      ).join('');
+    }
+  } catch(e) {
+    console.error(e);
+  }
+}
+
+update();
+setInterval(update, 10000);
+</script>
+</body>
+</html>

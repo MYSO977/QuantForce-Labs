@@ -1,0 +1,13 @@
+.quant_env
+*.db
+*.db-shm
+*.db-wal
+logs/
+__pycache__/
+*.pyc
+*.pyo
+.env
+*.key
+*.secret
+grafana_11.4.0_amd64.deb
+cursor.AppImage

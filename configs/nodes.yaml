@@ -1,0 +1,30 @@
+nodes:
+  main:
+    name: acer
+    ip: 192.168.0.18
+    role: orchestration
+  executor:
+    name: dell
+    ip: 192.168.0.11
+    role: execution
+  compute:
+    name: compute
+    ip: 192.168.0.143
+    role: compute
+  vision:
+    name: vision
+    ip: 192.168.0.15
+    role: vision
+  sentry:
+    name: sentry
+    ip: 192.168.0.101
+    role: sentry
+  courier:
+    name: courier
+    ip: 192.168.0.102
+    role: courier
+
+zmq:
+  dispatcher_port: 5556
+  bridge_port: 5555
+  output_port: 5557

@@ -1,0 +1,17 @@
+strategy:
+  name: v3.3
+  filters:
+    L1:
+      name: news_fingerprint
+      provider: groq
+      min_score: 7.5
+    L2:
+      name: cooldown
+      minutes: 60
+    L3:
+      name: rvol_ema
+      min_rvol: 2.0
+    L4:
+      name: price_macd
+      price_above_vwap: true
+      macd_above_zero: true
