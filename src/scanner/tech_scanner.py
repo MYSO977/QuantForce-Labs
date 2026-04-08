@@ -14,7 +14,10 @@ import pandas as pd
 import yfinance as yf
 
 # ─── CONFIG（部署时按节点修改）───────────────────────────────
-NODE_NAME     = "vision"
+import socket as _socket
+_HOSTNAME = _socket.gethostname()
+_NODE_MAP = {"dell-trading": "executor", "compute": "compute", "vision": "vision"}
+NODE_NAME     = _NODE_MAP.get(_HOSTNAME, _HOSTNAME)
 MAX_WORKERS   = 10
 SIGNAL_URL    = "http://192.168.0.18:5800/signal"
 SCAN_INTERVAL = 300
@@ -22,7 +25,7 @@ COOLDOWN_MIN  = 60
 PRICE_MIN     = 5.0
 PRICE_MAX     = 800.0
 MIN_AVG_VOL   = 300_000
-TICKER_SOURCE = "/home/heng/tickers_vision.txt"
+TICKER_SOURCE = f"/home/heng/tickers_{NODE_NAME}.txt"
 # ─────────────────────────────────────────────────────────────
 
 ET = ZoneInfo("America/New_York")

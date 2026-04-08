@@ -1,23 +1,21 @@
-.quant_env
-*.db
-*.db-shm
-*.db-wal
-logs/
-__pycache__/
+# 编译缓存
+**/__pycache__/
 *.pyc
 *.pyo
-.env
-*.key
-*.secret
-grafana_11.4.0_amd64.deb
-cursor.AppImage
+
+# 备份文件
 *.bak
-__pycache__/
-*.pyc
-*.db
-logs/
-nohup.out
 *.bak2
-tickers_*.txt
-universe_meta.json
-patch_*.py
+
+# 数据库和运行时数据
+data/signals.db
+nohup.out
+
+# 敏感配置
+.env
+*.env
+.quant_env
+
+# 日志
+*.log
+logs/
