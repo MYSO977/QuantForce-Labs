@@ -16,3 +16,8 @@ __pycache__/
 *.pyc
 *.db
 logs/
+nohup.out
+*.bak2
+tickers_*.txt
+universe_meta.json
+patch_*.py
