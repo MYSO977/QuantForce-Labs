@@ -9,6 +9,8 @@ import json
 import time
 import logging
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+ET = ZoneInfo("America/New_York")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -45,7 +47,7 @@ def log_signal(msg, result):
         con.execute('''INSERT INTO signals
             (ts,ticker,result,score,rvol,price,ema9,vwap,macd)
             VALUES (?,?,?,?,?,?,?,?,?)''', (
-            __import__('datetime').datetime.utcnow().isoformat(),
+            datetime.now(ET).isoformat(),
             msg.get('ticker'), result,
             msg.get('score'), msg.get('rvol'),
             msg.get('price'), msg.get('ema9'),
@@ -150,7 +152,7 @@ def run():
                 cur = con.execute('''INSERT INTO signals
                     (ts,ticker,result,score,rvol,price,ema9,vwap,macd)
                     VALUES (?,?,?,?,?,?,?,?,?)''', (
-                    datetime.utcnow().isoformat(), ticker, 'PASS',
+                    datetime.now(ET).isoformat(), ticker, 'PASS',
                     msg.get('score'), msg.get('rvol'), msg.get('price'),
                     msg.get('ema9'), msg.get('vwap'), msg.get('macd'),
                 ))
