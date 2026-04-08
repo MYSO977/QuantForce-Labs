@@ -16,7 +16,7 @@ import yfinance as yf
 # ─── CONFIG（部署时按节点修改）───────────────────────────────
 import socket as _socket
 _HOSTNAME = _socket.gethostname()
-_NODE_MAP = {"dell-trading": "executor", "compute": "compute", "vision": "vision"}
+_NODE_MAP = {"dell-trading": "executor", "compute": "compute", "vision": "vision", "heng-Aspire-XC-605": "center"}
 NODE_NAME     = _NODE_MAP.get(_HOSTNAME, _HOSTNAME)
 MAX_WORKERS   = 10
 SIGNAL_URL    = "http://192.168.0.18:5800/signal"
@@ -142,6 +142,7 @@ def analyze_ticker(ticker: str) -> dict | None:
             "rvol":   round(rvol, 2),
             "vwap":   round(vwap, 2),
             "macd":   round(macd_line, 4),
+            "ema9":   round(float(ema9.iloc[-1]), 4),
             "source": f"tech_scanner_{NODE_NAME}",
             "score":  7.5,
             "ts":     datetime.now(ET).isoformat()
