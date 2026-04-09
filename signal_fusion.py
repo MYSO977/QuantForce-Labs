@@ -85,15 +85,25 @@ def set_cooldown(ticker: str):
 # ─────────────────────────────────────────
 
 def get_pending_signals(conn) -> list[dict]:
-    """读取所有 pending 信号，按 ticker 聚合。"""
+    """读取pending信号。原子标记processing替代FOR UPDATE SKIP LOCKED。"""
+    with conn.cursor() as cur:
+        cur.execute("""
+            UPDATE signals_raw SET status='processing'
+            WHERE id IN (
+                SELECT id FROM signals_raw
+                WHERE status='pending'
+                  AND created_at > NOW() - INTERVAL '2 hours'
+                ORDER BY symbol, created_at ASC
+                LIMIT 100
+            )
+        """)
     sql = """
         SELECT id, symbol AS ticker, signal_type, direction, importance,
                features, created_at
         FROM signals_raw
-        WHERE status = 'pending'
+        WHERE status='processing'
           AND created_at > NOW() - INTERVAL '2 hours'
-        ORDER BY ticker, created_at ASC
-        FOR UPDATE SKIP LOCKED;
+        ORDER BY symbol, created_at ASC;
     """
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(sql)
