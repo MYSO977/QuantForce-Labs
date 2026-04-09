@@ -125,10 +125,15 @@ async def process_signal(ib, signal):
     qty = int(size) if size and int(size)>0 else (max(1,int(1000/price)) if price>0 else 0)
     if not qty: log.warning(f"无法计算股数: {signal}"); return
     contract = Stock(ticker,"SMART","USD"); ib.qualifyContracts(contract)
-    order_type="MKT"; trade=None
+    order_type=signal.get("order_type","MKT").upper(); trade=None
+    limit_price=signal.get("limit_price",0) or price
     try:
         if action=="BUY":
-            if atr>0 and price>0:
+            if order_type=="LMT" and limit_price>0:
+                from ib_insync import LimitOrder
+                order=LimitOrder("BUY",qty,limit_price); trade=ib.placeOrder(contract,order)
+                await asyncio.sleep(1); log.info(f"LMT BUY {ticker} qty={qty} limit={limit_price} status={trade.orderStatus.status}")
+            elif atr>0 and price>0:
                 order_type="BRACKET"
                 sp=round(price-2.0*atr,2); tp=round(price+3.0*atr,2)
                 bracket=ib.bracketOrder("BUY",qty,limitPrice=price,takeProfitPrice=tp,stopLossPrice=sp)
@@ -155,21 +160,27 @@ async def process_signal(ib, signal):
         if _reject_count>=ANOMALY_REJECT_THRESHOLD:
             await send_telegram(f"🚨 连续拒单{_reject_count}次\n{e}"); _reject_count=0
 
-async def main():
-    util.startLoop()
-    log.info(f"连接 IB Gateway {IB_HOST}:{IB_PORT}")
-    ib=IB(); await ib.connectAsync(IB_HOST,IB_PORT,clientId=IB_CLIENT_ID)
-    log.info(f"已连接 accounts={ib.managedAccounts()}")
-    ctx=zmq.asyncio.Context(); pull=ctx.socket(zmq.PULL)
-    pull.bind(f"tcp://*:{ZMQ_PORT}"); log.info(f"ZMQ PULL 监听:{ZMQ_PORT}")
-    asyncio.create_task(phi3_anomaly_monitor())
-    while True:
-        try:
-            if not ib.isConnected():
-                log.warning("IB断连，重连..."); await ib.connectAsync(IB_HOST,IB_PORT,clientId=IB_CLIENT_ID)
-            msg=await pull.recv_json()
-            log.info(f"收到: {msg.get('ticker','?')} action={msg.get('action','?')} size={msg.get('size')} price={msg.get('price')} score={msg.get('score')}")
-            await process_signal(ib,msg)
-        except Exception as e: log.error(f"主循环: {e}"); await asyncio.sleep(1)
+def main():
+    async def _run():
+        log.info(f"连接 IB Gateway {IB_HOST}:{IB_PORT}")
+        ib=IB()
+        await ib.connectAsync(IB_HOST,IB_PORT,clientId=IB_CLIENT_ID)
+        log.info(f"已连接 accounts={ib.managedAccounts()}")
+        ctx=zmq.asyncio.Context(); pull=ctx.socket(zmq.PULL)
+        pull.bind(f"tcp://*:{ZMQ_PORT}")
+        log.info(f"ZMQ PULL 监听:{ZMQ_PORT}")
+        asyncio.ensure_future(phi3_anomaly_monitor())
+        while True:
+            try:
+                if not ib.isConnected():
+                    log.warning("IB断连，重连...")
+                    await ib.connectAsync(IB_HOST,IB_PORT,clientId=IB_CLIENT_ID)
+                msg=await pull.recv_json()
+                log.info(f"收到: {msg.get('ticker','?')} action={msg.get('action','?')} size={msg.get('size')} price={msg.get('price')} score={msg.get('score')}")
+                await process_signal(ib,msg)
+            except Exception as e:
+                log.error(f"主循环: {e}")
+                await asyncio.sleep(1)
+    util.run(_run())
 
-if __name__=="__main__": asyncio.run(main())
+if __name__=="__main__": main()
