@@ -213,6 +213,29 @@ def apply_filters(ticker: str, news_sigs: list, tech_sigs: list) -> dict | None:
     else:
         return None
 
+    # 文档4.3: universe_whitelist rank → confidence加成
+    try:
+        import psycopg2 as _pg
+        _conn = _pg.connect("host=192.168.0.18 port=5432 dbname=quantforce user=heng password=quantforce123")
+        _cur = _conn.cursor()
+        _cur.execute("SELECT dollar_volume_rank FROM universe_whitelist WHERE symbol=%s", (ticker,))
+        _row = _cur.fetchone()
+        _cur.close(); _conn.close()
+        if _row:
+            _rank = _row[0]
+            if _rank <= 100:
+                _mult = 1.0
+            elif _rank <= 500:
+                _mult = 0.95
+            elif _rank <= 1000:
+                _mult = 0.90
+            else:
+                _mult = 0.85
+            confidence = round(confidence * _mult, 3)
+            log.info(f"[RANK] {ticker} rank={_rank} mult={_mult} confidence→{confidence}")
+    except Exception as _e:
+        log.warning(f"[RANK] {ticker} rank查询失败: {_e}")
+
     final = {
         "ticker":     ticker,
         "direction":  "buy",
