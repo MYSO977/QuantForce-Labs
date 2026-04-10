@@ -6,9 +6,9 @@ from ib_insync import IB, Stock, MarketOrder, LimitOrder
 
 IB_HOST       = "127.0.0.1"
 IB_PORT       = 4002
-IB_CLIENT_ID  = 11
+IB_CLIENT_ID  = 20
 ZMQ_PULL_PORT = 5558
-PG_DSN        = os.environ.get("QUANT_PG_DSN","host=192.168.0.18 port=5432 dbname=quantforce user=heng password=quantforce123")
+PG_DSN        = os.environ.get("QUANT_PG_DSN","host=192.168.0.18 port=5432 dbname=quantforce user=heng password=newpassword123")
 OLLAMA_URL    = "http://127.0.0.1:11434/api/chat"
 PHI3_MODEL    = "phi3:mini"
 DEDUP_TTL     = 300
@@ -63,7 +63,10 @@ ON CONFLICT DO NOTHING;
 
 def write_exec(conn, row):
     try:
-        with conn.cursor() as cur: cur.execute(INSERT_EXEC, row)
+        with conn.cursor() as cur:
+            cur.execute(INSERT_EXEC, row)
+            if row.get('signal_id') and str(row['signal_id']).isdigit():
+                cur.execute("UPDATE signals_final SET status='executed', executed_at=NOW() WHERE id=%s", (int(row['signal_id']),))
         conn.commit()
         log.info(f"[PG] {row['symbol']} {row['action']} qty={row['qty']}")
     except Exception as e:
@@ -151,7 +154,7 @@ def run():
             try: raw = pull.recv_json(flags=zmq.NOBLOCK)
             except zmq.Again: ib.sleep(0.1); continue
             sid = raw.get("signal_id", str(uuid.uuid4()))
-            log.info(f"收到: {raw.get('ticker')} {raw.get('action')} price={raw.get('price')} sid={sid[:8]}")
+            log.info(f"收到: {raw.get('ticker')} {raw.get('action')} price={raw.get('price')} sid={str(sid)[:8]}")
             if is_duplicate(sid): log.info("重复跳过"); continue
             ok, pre_note = phi3_pre(raw)
             if not ok: log.warning(f"[phi3/pre] SKIP {raw.get('ticker')}"); continue
