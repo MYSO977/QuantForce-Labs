@@ -49,7 +49,7 @@ def get_signals():
 @app.route('/nodes', methods=['GET'])
 def get_nodes():
     nodes = {'main': '192.168.0.18', 'executor': '192.168.0.11',
-             'compute': '192.168.0.143', 'vision': '192.168.0.15',
+             'compute': '192.168.0.143', 
              'sentry': '192.168.0.101', 'courier': '192.168.0.102'}
     status = {}
     for name, ip in nodes.items():
@@ -70,7 +70,7 @@ def grafana_health():
 @app.route('/grafana/search', methods=['POST'])
 def grafana_search():
     return jsonify(['dispatcher_status', 'node_main', 'node_executor',
-                    'node_compute', 'node_vision', 'node_sentry', 'node_courier', 'api_status'])
+                    'node_compute', 'node_sentry', 'node_courier', 'api_status'])
 
 @app.route('/grafana/query', methods=['POST'])
 def grafana_query():
@@ -88,7 +88,7 @@ def grafana_query():
         elif t.startswith('node_'):
             node = t.replace('node_', '')
             nodes = {'main': '192.168.0.18', 'executor': '192.168.0.11',
-                     'compute': '192.168.0.143', 'vision': '192.168.0.15',
+                     'compute': '192.168.0.143', 
                      'sentry': '192.168.0.101', 'courier': '192.168.0.102'}
             ip = nodes.get(node, '')
             r = subprocess.run(['ping', '-c1', '-W1', ip], capture_output=True)
@@ -112,7 +112,7 @@ def dashboard():
 @app.route('/nodes/list', methods=['GET'])
 def get_nodes_list():
     nodes = {'main': '192.168.0.18', 'executor': '192.168.0.11',
-             'compute': '192.168.0.143', 'vision': '192.168.0.15',
+             'compute': '192.168.0.143', 
              'sentry': '192.168.0.101', 'courier': '192.168.0.102'}
     result = []
     for name, ip in nodes.items():
@@ -131,10 +131,10 @@ def dispatcher_stat():
 def get_nodes_metrics():
     import urllib.request, re
     nodes = {
-        'main':     ('192.168.0.18',  'stats'),
+        'main':     ('192.168.0.18',  'metrics'),
         'executor': ('192.168.0.11',  'metrics'),
         'compute':  ('192.168.0.143', 'stats'),
-        'vision':   ('192.168.0.15',  'stats'),
+        
         'sentry':   ('192.168.0.101', 'metrics'),
         'courier':  ('192.168.0.102', 'stats'),
     }
@@ -190,7 +190,7 @@ def signals_stat():
 SERVICES = {
     'dispatcher':   '192.168.0.18',
     'ib-executor':  '192.168.0.11',
-    'news-scanner': '192.168.0.15',
+    'news-scanner': '192.168.0.143',
     'courier':      '192.168.0.102',
 }
 
@@ -206,7 +206,7 @@ def services_status():
     import socket as _sock
     for svc, host, port in [
         ('ib-executor 交易执行',  '192.168.0.11',  5557),
-        ('news-scanner 新闻扫描', '192.168.0.15',  9100),
+        ('news-scanner 新闻扫描', '192.168.0.143', 9100),
         ('compute 计算节点',      '192.168.0.143', 9100),
         ('sentry 哨兵节点',       '192.168.0.101', 9100),
         ('courier 信使节点',      '192.168.0.102', 9100),
