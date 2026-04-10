@@ -200,12 +200,12 @@ def services_status():
     result = []
     # dispatcher — 本机检查进程
     import subprocess as _sp
-    r = _sp.run(['pgrep','-f','dispatcher.py'], capture_output=True)
+    r = _sp.run(['pgrep','-f','signal_fusion.py'], capture_output=True)
     result.append({'service':'dispatcher 信号调度', 'host':'192.168.0.18',
                    'status':'UP' if r.returncode==0 else 'DOWN'})
     import socket as _sock
     for svc, host, port in [
-        ('ib-executor 交易执行',  '192.168.0.11',  5557),
+        ('ib-executor 交易执行',  '192.168.0.11',  5558),
         ('news-scanner 新闻扫描', '192.168.0.143', 9100),
         ('compute 计算节点',      '192.168.0.143', 9100),
         ('sentry 哨兵节点',       '192.168.0.101', 9100),
