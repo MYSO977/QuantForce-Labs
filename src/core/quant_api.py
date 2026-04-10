@@ -52,11 +52,16 @@ def inject_signal():
     try:
         with get_pg() as conn:
             with conn.cursor() as cur:
+                import uuid, hashlib
+                sig_id = str(uuid.uuid4())
+                ev_hash = hashlib.md5(json.dumps(data, sort_keys=True).encode()).hexdigest()
                 cur.execute("""
-                    INSERT INTO signals_raw (symbol,signal_type,confidence,source,pipeline,event_hash,expire_at,status,features)
-                    VALUES (%s,'manual',%s,'api','quant_api',md5(%s::text),NOW()+INTERVAL '2 hours','pending','{}')
+                    INSERT INTO signals_raw
+                    (signal_id,symbol,signal_type,direction,importance,confidence,score,source,pipeline,event_hash,expire_at,status,features)
+                    VALUES (%s,%s,'tech','buy',80,%s,%s,'api','quant_api',%s,NOW()+INTERVAL '2 hours','pending',%s)
                     ON CONFLICT (event_hash) DO NOTHING
-                """, (data['ticker'], min(data['score']/10,1.0), json.dumps(data)))
+                """, (sig_id, data['ticker'], min(data['score']/10,1.0), data.get('score',0),
+                      ev_hash, json.dumps(data)))
             conn.commit()
         return jsonify({'status':'sent','ticker':data['ticker']})
     except Exception as e:
