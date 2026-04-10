@@ -1,186 +1,176 @@
-import asyncio, logging, os, time, uuid, httpx, psycopg2, zmq, zmq.asyncio
-from ib_insync import IB, MarketOrder, Stock, util
+#!/usr/bin/env python3
+import json, logging, os, signal, time, threading, uuid
+from datetime import datetime, timezone
+import psycopg2, requests, zmq
+from ib_insync import IB, Stock, MarketOrder, LimitOrder
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [IB_EXECUTOR] %(message)s",
-    handlers=[logging.StreamHandler(), logging.FileHandler("/home/heng/ib_executor.log")])
+IB_HOST       = "127.0.0.1"
+IB_PORT       = 4002
+IB_CLIENT_ID  = 11
+ZMQ_PULL_PORT = 5558
+PG_DSN        = os.environ.get("QUANT_PG_DSN","host=192.168.0.18 port=5432 dbname=quantforce user=heng password=quantforce123")
+OLLAMA_URL    = "http://127.0.0.1:11434/api/chat"
+PHI3_MODEL    = "phi3:mini"
+DEDUP_TTL     = 300
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [EXECUTOR] %(levelname)s %(message)s", datefmt="%H:%M:%S")
 log = logging.getLogger(__name__)
 
-IB_HOST      = os.getenv("IB_HOST", "192.168.0.11")
-IB_PORT      = int(os.getenv("IB_PORT", "4002"))
-IB_CLIENT_ID = int(os.getenv("IB_CLIENT_ID", "11"))
-ZMQ_PORT     = int(os.getenv("ZMQ_PORT", "5558"))
-DEDUP_TTL    = 300
-PHI3_URL     = "http://localhost:11434/api/generate"
-PHI3_MODEL   = "phi3:mini"
-PHI3_TIMEOUT = 30
-PG_DSN = os.getenv("QUANT_PG_DSN","host=192.168.0.18 port=5432 dbname=quantforce user=heng password=quantforce123")
-TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN","")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID","")
-ANOMALY_REJECT_THRESHOLD = 3
-ANOMALY_SLIPPAGE_PCT     = 0.5
-_seen_signals = {}
-_reject_count = 0
-
-def _is_duplicate(sid):
+_seen: dict = {}
+def is_duplicate(sid):
     now = time.time()
-    for k in [k for k,v in _seen_signals.items() if now-v>DEDUP_TTL]: del _seen_signals[k]
-    if sid in _seen_signals: return True
-    _seen_signals[sid] = now; return False
+    _seen.update({k:v for k,v in _seen.items() if now-v < DEDUP_TTL})
+    if sid in _seen: return True
+    _seen[sid] = now
+    return False
 
-async def send_telegram(msg):
-    if not TELEGRAM_TOKEN: log.warning(f"[TG] 未配置: {msg}"); return
+def _phi3(messages, timeout):
     try:
-        async with httpx.AsyncClient(timeout=5) as c:
-            await c.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-                         json={"chat_id":TELEGRAM_CHAT_ID,"text":msg})
-    except Exception as e: log.warning(f"[TG] 失败: {e}")
-
-async def call_phi3(prompt):
-    try:
-        async with httpx.AsyncClient(timeout=PHI3_TIMEOUT) as c:
-            r = await c.post(PHI3_URL, json={"model":PHI3_MODEL,"prompt":prompt,"stream":False})
-            return r.json().get("response","").strip()
-    except Exception as e: log.warning(f"[PHI3] 失败: {e}"); return f"phi3 error: {e}"
-
-async def phi3_pre_check(signal, qty, order_type, exec_id):
-    ticker = signal.get("ticker","?")
-    prompt = (f"Trading execution assistant. Evaluate briefly.\n"
-              f"Stock:{ticker} Action:{signal.get('action','BUY')} Price:${signal.get('price',0):.2f} "
-              f"Qty:{qty} Type:{order_type} Score:{signal.get('score',0)}/10 RVOL:{signal.get('rvol',0):.1f}x\n"
-              f"1-2 sentences: reasonable execution? Note slippage or timing risks.")
-    result = await call_phi3(prompt)
-    log.info(f"[PHI3 PRE] {ticker}: {result}")
-    await _update_phi3_note(exec_id, f"[PRE] {result}")
-    if any(kw in result.lower() for kw in ["high risk","avoid","dangerous","do not","slippage risk"]):
-        await send_telegram(f"⚠️ phi3预警 {ticker}\n{result}")
-
-async def phi3_post_summary(signal, qty, fill_price, order_price, exec_id):
-    ticker = signal.get("ticker","?")
-    slip = abs(fill_price-order_price)/order_price*100 if order_price>0 else 0
-    prompt = (f"Execution summary: {ticker} {signal.get('action','BUY')}\n"
-              f"Signal:${order_price:.2f} Fill:${fill_price:.2f} Qty:{qty} Slippage:{slip:.3f}%\n"
-              f"Score:{signal.get('score',0)}/10 RVOL:{signal.get('rvol',0):.1f}x\n"
-              f"1 sentence execution quality summary.")
-    result = await call_phi3(prompt)
-    log.info(f"[PHI3 POST] {ticker}: {result}")
-    await _append_phi3_note(exec_id, f"[POST] {result}")
-    if slip > ANOMALY_SLIPPAGE_PCT:
-        await send_telegram(f"⚠️ phi3滑点告警 {ticker}\n滑点{slip:.3f}%>{ANOMALY_SLIPPAGE_PCT}%\n{result}")
-
-async def phi3_anomaly_monitor():
-    log.info("[PHI3 ANOMALY] 监控启动")
-    while True:
-        await asyncio.sleep(60)
-        try:
-            with open("/home/heng/ib_executor.log") as f: lines = f.readlines()
-            recent = "".join(lines[-20:])
-            prompt = (f"Monitor IB executor logs:\n{recent}\n"
-                      f"Reply OK if normal, or ALERT:<reason> if anomaly (rejections/disconnects/errors).")
-            result = await call_phi3(prompt)
-            log.info(f"[PHI3 ANOMALY] {result}")
-            if result.upper().startswith("ALERT"): await send_telegram(f"🚨 phi3异常\n{result}")
-        except Exception as e: log.warning(f"[PHI3 ANOMALY] {e}")
-
-def _pg_write_execution(signal, qty, ib_order_id, order_type):
-    try:
-        conn = psycopg2.connect(PG_DSN); cur = conn.cursor()
-        cur.execute("INSERT INTO executions (ts,symbol,action,qty,price,order_type,ib_order_id,signal_id) VALUES (NOW(),%s,%s,%s,%s,%s,%s,%s) RETURNING id",
-            (signal.get("ticker"),signal.get("action","BUY"),qty,signal.get("price",0),order_type,ib_order_id,signal.get("signal_id")))
-        eid = cur.fetchone()[0]; conn.commit(); cur.close(); conn.close(); return eid
-    except Exception as e: log.error(f"[PG] 写失败: {e}"); return -1
-
-async def _update_phi3_note(exec_id, note):
-    if exec_id<0: return
-    try:
-        conn = psycopg2.connect(PG_DSN); cur = conn.cursor()
-        cur.execute("UPDATE executions SET phi3_note=%s WHERE id=%s",(note,exec_id))
-        conn.commit(); cur.close(); conn.close()
-    except Exception as e: log.warning(f"[PG] update失败: {e}")
-
-async def _append_phi3_note(exec_id, note):
-    if exec_id<0: return
-    try:
-        conn = psycopg2.connect(PG_DSN); cur = conn.cursor()
-        cur.execute("UPDATE executions SET phi3_note=COALESCE(phi3_note,'')||' | '||%s WHERE id=%s",(note,exec_id))
-        conn.commit(); cur.close(); conn.close()
-    except Exception as e: log.warning(f"[PG] append失败: {e}")
-
-async def _wait_fill_and_summarize(trade, signal, qty, order_price, exec_id):
-    try:
-        for _ in range(30):
-            await asyncio.sleep(1)
-            if trade.orderStatus.status in ("Filled","Submitted"):
-                fp = trade.orderStatus.avgFillPrice or order_price
-                if fp>0: await phi3_post_summary(signal,qty,fp,order_price,exec_id); return
-        log.info(f"[PHI3 POST] {signal.get('ticker')} 30s未成交，跳过")
-    except Exception as e: log.warning(f"[PHI3 POST] {e}")
-
-async def process_signal(ib, signal):
-    global _reject_count
-    ticker=signal.get("ticker"); action=signal.get("action","BUY").upper()
-    price=signal.get("price",0); size=signal.get("size"); atr=signal.get("atr",0)
-    sid=signal.get("signal_id") or str(uuid.uuid4())
-    if not ticker: log.warning(f"无ticker: {signal}"); return
-    if _is_duplicate(sid): log.warning(f"重复: {sid} {ticker}"); return
-    qty = int(size) if size and int(size)>0 else (max(1,int(1000/price)) if price>0 else 0)
-    if not qty: log.warning(f"无法计算股数: {signal}"); return
-    contract = Stock(ticker,"SMART","USD"); ib.qualifyContracts(contract)
-    order_type=signal.get("order_type","MKT").upper(); trade=None
-    limit_price=signal.get("limit_price",0) or price
-    try:
-        if action=="BUY":
-            if order_type=="LMT" and limit_price>0:
-                from ib_insync import LimitOrder
-                order=LimitOrder("BUY",qty,limit_price); trade=ib.placeOrder(contract,order)
-                await asyncio.sleep(1); log.info(f"LMT BUY {ticker} qty={qty} limit={limit_price} status={trade.orderStatus.status}")
-            elif atr>0 and price>0:
-                order_type="BRACKET"
-                sp=round(price-2.0*atr,2); tp=round(price+3.0*atr,2)
-                bracket=ib.bracketOrder("BUY",qty,limitPrice=price,takeProfitPrice=tp,stopLossPrice=sp)
-                bracket[0]=MarketOrder("BUY",qty); bracket[0].transmit=False
-                bracket[1].parentId=bracket[0].orderId; bracket[2].parentId=bracket[0].orderId; bracket[2].transmit=True
-                trades=[ib.placeOrder(contract,o) for o in bracket]; await asyncio.sleep(1); trade=trades[0]
-                log.info(f"BRACKET BUY {ticker} qty={qty} stop={sp} tp={tp} status={trade.orderStatus.status}")
-            else:
-                order=MarketOrder("BUY",qty); trade=ib.placeOrder(contract,order)
-                await asyncio.sleep(1); log.info(f"MKT BUY {ticker} qty={qty} status={trade.orderStatus.status}")
-        elif action=="SELL":
-            positions={p.contract.symbol:p for p in ib.positions()}; pos=positions.get(ticker)
-            if pos and abs(pos.position)>0:
-                sq=int(abs(pos.position)); order=MarketOrder("SELL",sq); trade=ib.placeOrder(contract,order)
-                await asyncio.sleep(1); log.info(f"MKT SELL {ticker} qty={sq} status={trade.orderStatus.status}")
-            else: log.warning(f"SELL {ticker} 无持仓"); return
-        else: log.warning(f"未知action={action}"); return
-        _reject_count=0
-        eid=_pg_write_execution(signal,qty,trade.order.orderId if trade else -1,order_type)
-        asyncio.create_task(phi3_pre_check(signal,qty,order_type,eid))
-        if trade: asyncio.create_task(_wait_fill_and_summarize(trade,signal,qty,price,eid))
+        r = requests.post(OLLAMA_URL, json={"model":PHI3_MODEL,"messages":messages,"stream":False}, timeout=timeout)
+        r.raise_for_status()
+        return r.json()["message"]["content"].strip()
     except Exception as e:
-        log.error(f"下单异常 {ticker}: {e}"); _reject_count+=1
-        if _reject_count>=ANOMALY_REJECT_THRESHOLD:
-            await send_telegram(f"🚨 连续拒单{_reject_count}次\n{e}"); _reject_count=0
+        log.warning(f"[phi3] {e}")
+        return None
 
-def main():
-    async def _run():
-        log.info(f"连接 IB Gateway {IB_HOST}:{IB_PORT}")
-        ib=IB()
-        await ib.connectAsync(IB_HOST,IB_PORT,clientId=IB_CLIENT_ID)
-        log.info(f"已连接 accounts={ib.managedAccounts()}")
-        ctx=zmq.asyncio.Context(); pull=ctx.socket(zmq.PULL)
-        pull.bind(f"tcp://*:{ZMQ_PORT}")
-        log.info(f"ZMQ PULL 监听:{ZMQ_PORT}")
-        asyncio.ensure_future(phi3_anomaly_monitor())
-        while True:
-            try:
-                if not ib.isConnected():
-                    log.warning("IB断连，重连...")
-                    await ib.connectAsync(IB_HOST,IB_PORT,clientId=IB_CLIENT_ID)
-                msg=await pull.recv_json()
-                log.info(f"收到: {msg.get('ticker','?')} action={msg.get('action','?')} size={msg.get('size')} price={msg.get('price')} score={msg.get('score')}")
-                await process_signal(ib,msg)
-            except Exception as e:
-                log.error(f"主循环: {e}")
-                await asyncio.sleep(1)
-    util.run(_run())
+def phi3_pre(sig):
+    p = (f"Pre-trade check. Signal: {sig.get('action','BUY')} {sig.get('ticker')} "
+         f"@ ${sig.get('price',0):.2f} confidence={sig.get('confidence',0):.2f}. "
+         f"Reason: {sig.get('reason','')}. Reply PROCEED or SKIP only.")
+    r = _phi3([{"role":"user","content":p}], 10.0)
+    if r is None: return True, "timeout"
+    ok = "SKIP" not in r.upper()
+    log.info(f"[phi3/pre] {sig.get('ticker')} {r[:40]} proceed={ok}")
+    return ok, r[:120]
 
-if __name__=="__main__": main()
+def phi3_post(sig, res):
+    p = (f"One sentence (max 80 chars): {res.get('action','BUY')} {res.get('qty')} "
+         f"{sig.get('ticker')} @ ${res.get('avg_price',0):.2f} status={res.get('status')} "
+         f"latency={res.get('latency_ms')}ms.")
+    return _phi3([{"role":"user","content":p}], 10.0) or "timeout"
+
+def phi3_anomaly(lines):
+    if not lines: return None
+    p = f"Monitor IB executor logs. Reply NORMAL or brief alert:\n" + "\n".join(lines[-30:])
+    r = _phi3([{"role":"user","content":p}], 15.0)
+    return r[:200] if r and "NORMAL" not in r.upper() else None
+
+INSERT_EXEC = """
+INSERT INTO executions (ts,symbol,action,qty,price,order_type,ib_order_id,signal_id,confidence,phi3_note,status)
+VALUES (%(ts)s,%(symbol)s,%(action)s,%(qty)s,%(price)s,%(order_type)s,%(ib_order_id)s,%(signal_id)s,%(confidence)s,%(phi3_note)s,%(status)s)
+ON CONFLICT DO NOTHING;
+"""
+
+def write_exec(conn, row):
+    try:
+        with conn.cursor() as cur: cur.execute(INSERT_EXEC, row)
+        conn.commit()
+        log.info(f"[PG] {row['symbol']} {row['action']} qty={row['qty']}")
+    except Exception as e:
+        log.error(f"[PG] {e}")
+        try: conn.rollback()
+        except: pass
+
+def place_order(ib, sig):
+    ticker = sig.get("ticker","")
+    action = sig.get("action","BUY").upper()
+    qty    = int(sig.get("size",1))
+    price  = float(sig.get("price",0))
+    otype  = sig.get("order_type","MKT").upper()
+    contract = Stock(ticker,"SMART","USD")
+    try: ib.qualifyContracts(contract)
+    except Exception as e:
+        log.error(f"qualify {ticker}: {e}"); return None
+    if action == "SELL":
+        pos = {p.contract.symbol:p for p in ib.positions()}.get(ticker)
+        if pos and abs(pos.position) > 0: qty = int(abs(pos.position))
+        else: log.warning(f"SELL {ticker} 无持仓"); return None
+    order = LimitOrder(action, qty, round(price,2)) if otype=="LMT" and price>0 else MarketOrder(action, qty)
+    t0 = time.time()
+    trade = ib.placeOrder(contract, order)
+    ib.sleep(1)
+    log.info(f"[ORDER] {ticker} {action} qty={qty} status={trade.orderStatus.status}")
+    return {"qty":qty,"avg_price":trade.orderStatus.avgFillPrice or price,
+            "status":trade.orderStatus.status,"ib_order_id":trade.order.orderId,
+            "latency_ms":int((time.time()-t0)*1000),
+            "signal_id":sig.get("signal_id",str(uuid.uuid4())),
+            "confidence":float(sig.get("confidence",0)),"order_type":otype,"action":action}
+
+_logbuf, _loglock = [], threading.Lock()
+class BufHandler(logging.Handler):
+    def emit(self, r):
+        with _loglock:
+            _logbuf.append(self.format(r))
+            if len(_logbuf)>200: _logbuf.pop(0)
+
+def anomaly_thread(stop):
+    log.info("[phi3/anomaly] 启动")
+    while not stop.wait(300):
+        with _loglock: lines = list(_logbuf)
+        alert = phi3_anomaly(lines)
+        if alert: log.warning(f"[phi3/anomaly] {alert}")
+
+def get_ib():
+    ib = IB()
+    ib.connect(IB_HOST, IB_PORT, clientId=IB_CLIENT_ID, timeout=15)
+    log.info(f"IB就绪 {ib.managedAccounts()}")
+    return ib
+
+def get_pg():
+    c = psycopg2.connect(PG_DSN)
+    log.info("PG就绪")
+    return c
+
+def run():
+    log.info("=== ib_executor_v2 启动 ===")
+    ib = get_ib()
+    conn = get_pg()
+    ctx = zmq.Context()
+    pull = ctx.socket(zmq.PULL)
+    pull.bind(f"tcp://*:{ZMQ_PULL_PORT}")
+    log.info(f"ZMQ PULL :{ ZMQ_PULL_PORT}")
+    h = BufHandler()
+    h.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+    log.addHandler(h)
+    stop = threading.Event()
+    threading.Thread(target=anomaly_thread, args=(stop,), daemon=True).start()
+    def _quit(*_):
+        stop.set(); pull.close(); ctx.term(); ib.disconnect(); conn.close()
+    signal.signal(signal.SIGTERM, _quit)
+    signal.signal(signal.SIGINT,  _quit)
+    log.info("等待信号...")
+    while True:
+        try:
+            if not ib.isConnected():
+                try: ib = get_ib()
+                except Exception as e: log.error(e); time.sleep(5); continue
+            try: conn.cursor().execute("SELECT 1")
+            except:
+                try: conn = get_pg()
+                except Exception as e: log.error(e)
+            try: raw = pull.recv_json(flags=zmq.NOBLOCK)
+            except zmq.Again: ib.sleep(0.1); continue
+            sid = raw.get("signal_id", str(uuid.uuid4()))
+            log.info(f"收到: {raw.get('ticker')} {raw.get('action')} price={raw.get('price')} sid={sid[:8]}")
+            if is_duplicate(sid): log.info("重复跳过"); continue
+            ok, pre_note = phi3_pre(raw)
+            if not ok: log.warning(f"[phi3/pre] SKIP {raw.get('ticker')}"); continue
+            res = place_order(ib, raw)
+            if res is None: continue
+            def _post(s=raw, r=res, n=pre_note):
+                summ = phi3_post(s, r)
+                write_exec(conn, {"ts":datetime.now(timezone.utc),"symbol":s.get("ticker"),
+                    "action":r["action"],"qty":r["qty"],"price":round(r["avg_price"],4),
+                    "order_type":r["order_type"],"ib_order_id":str(r["ib_order_id"]),
+                    "signal_id":r["signal_id"],"confidence":r["confidence"],
+                    "phi3_note":f"[pre:{n[:40]}][post:{summ[:80]}]","status":r["status"]})
+            threading.Thread(target=_post, daemon=True).start()
+        except zmq.ZMQError as e:
+            if e.errno == zmq.ETERM: break
+            log.error(f"ZMQ:{e}")
+        except Exception as e:
+            log.error(f"异常:{e}", exc_info=True); time.sleep(1)
+    log.info("=== 退出 ===")
+
+if __name__ == "__main__":
+    run()
