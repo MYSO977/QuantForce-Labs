@@ -32,7 +32,7 @@ import pytz
 
 PG_DSN = os.getenv(
     "QUANT_PG_DSN",
-    "host=192.168.0.18 port=5432 dbname=quantforce user=heng password=YOUR_PG_PASSWORD"
+    "host=192.168.0.18 port=5432 dbname=quantforce user=heng password=newpassword123"
 )
 
 ZMQ_PUSH_ADDR = "tcp://192.168.0.11:5558"   # ib_executor PULL 监听地址
@@ -97,6 +97,7 @@ def get_pending_signals(conn) -> list[dict]:
                 LIMIT 100
             )
         """)
+    conn.commit()
     sql = """
         SELECT id, symbol AS ticker, signal_type, direction, importance,
                features, created_at
@@ -128,18 +129,29 @@ def write_signals_final(conn, final: dict) -> int | None:
     """写入 signals_final，返回新行 id。"""
     sql = """
         INSERT INTO signals_final
-            (ticker, direction, confidence, reason, features, created_at)
+            (symbol, direction, fused_score, tech_score, news_score,
+             conflict, resonance, source_ids, features, status, expire_at,
+             ticker, confidence, reason)
         VALUES
-            (%s, %s, %s, %s, %s, NOW())
+            (%s, %s, %s, %s, %s,
+             %s, %s, %s, %s, 'pending', NOW() + INTERVAL '2 hours',
+             %s, %s, %s)
         RETURNING id;
     """
     with conn.cursor() as cur:
         cur.execute(sql, (
             final["ticker"],
-            final["direction"],
-            final["confidence"],
-            final["reason"],
-            json.dumps(final["features"]),
+            final.get("direction", "buy"),
+            final.get("confidence", 0.5),
+            final.get("tech_score"),
+            final.get("news_score"),
+            final.get("conflict", "none"),
+            final.get("resonance", False),
+            json.dumps(final.get("source_ids", [])),
+            json.dumps(final.get("features", {})),
+            final["ticker"],
+            final.get("confidence", 0.5),
+            final.get("reason", ""),
         ))
         row = cur.fetchone()
     return row[0] if row else None
@@ -193,6 +205,17 @@ def apply_filters(ticker: str, news_sigs: list, tech_sigs: list) -> dict | None:
         best_tech = max(tech_sigs, key=lambda s: s.get("importance", 0))
         f = best_tech.get("features", {})
         l4_pass = bool(f.get("l4_pass", False))
+        if not l4_pass:
+            price = float(f.get("price") or 0)
+            ema9  = float(f.get("ema9") or 0)
+            vwap  = float(f.get("vwap") or 0)
+            open_ = float(f.get("open") or 0)
+            macd  = float(f.get("macd") or 0)
+            if price > 0 and vwap > 0 and open_ > 0:
+                if ema9 > 0:
+                    l4_pass = (price > ema9 and price > vwap and price > open_ and macd > 0)
+                else:
+                    l4_pass = (price > vwap and price > open_ and macd > 0)
         l4_features = {
             "price":      f.get("price"),
             "ema9":       f.get("ema9"),
@@ -226,7 +249,7 @@ def apply_filters(ticker: str, news_sigs: list, tech_sigs: list) -> dict | None:
     # 文档4.3: universe_whitelist rank → confidence加成
     try:
         import psycopg2 as _pg
-        _conn = _pg.connect("host=192.168.0.18 port=5432 dbname=quantforce user=heng password=quantforce123")
+        _conn = _pg.connect("host=192.168.0.18 port=5432 dbname=quantforce user=heng password=newpassword123")
         _cur = _conn.cursor()
         _cur.execute("SELECT dollar_volume_rank FROM universe_whitelist WHERE symbol=%s", (ticker,))
         _row = _cur.fetchone()
