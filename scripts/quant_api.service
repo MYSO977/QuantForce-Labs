@@ -1,0 +1,15 @@
+[Unit]
+Description=QuantForce API
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=heng
+WorkingDirectory=/home/heng/QuantForce_Labs
+EnvironmentFile=/home/heng/.quant_env
+ExecStart=/usr/bin/python3 /home/heng/QuantForce_Labs/src/core/quant_api.py
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target
