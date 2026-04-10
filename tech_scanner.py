@@ -202,6 +202,10 @@ def run_scan(tickers: list[str]):
 
     elapsed = round(time.time() - t0, 1)
     log.info(f"扫描完成，耗时 {elapsed}s，触发信号 {len(signals)} 个")
+    try:
+        import requests as _req
+        _req.post("http://192.168.0.18:5800/scanner/status", json={"node":NODE_NAME,"total":len(tickers),"signals":len(signals),"elapsed_s":elapsed}, timeout=3)
+    except: pass
 
 
 # ── 主循环 ────────────────────────────────────────────────────
