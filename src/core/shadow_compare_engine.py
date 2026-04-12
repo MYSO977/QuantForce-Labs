@@ -107,3 +107,26 @@ class ShadowCompareEngine:
             log.info(f"🚀 自动晋升: {report.strategy_id} → enabled=True")
             return True
         return False
+
+class ApprovalWorkflow:
+    """状态机: SHADOW → CANARY → LIVE (带熔断回滚)"""
+    THRESHOLDS = {
+        "SHADOW": {"min_days": 5, "sharpe_improve": 0.10, "fp_max": 0.05},
+        "CANARY": {"min_days": 3, "max_dd": 0.04, "cap_pct": 0.10},
+        "LIVE":   {"max_dd": 0.08, "wr_drop": 0.15}
+    }
+    def evaluate(self, artifact: dict, metrics: dict) -> str:
+        dep = artifact.get("deployment", artifact)
+        state = dep.get("state", dep.get("shadow_mode", True) and "SHADOW" or "LIVE")
+        days = dep.get("shadow_days", 0)
+        T = self.THRESHOLDS.get(state, {})
+        if state == "SHADOW" and days >= T.get("min_days", 99):
+            if metrics.get("sharpe", 0) > metrics.get("base_sharpe", 0) + T.get("sharpe_improve", 0):
+                return "CANARY"
+        elif state == "CANARY" and days >= T.get("min_days", 99):
+            if metrics.get("max_dd", 1) < T.get("max_dd", 0.04) and dep.get("manual_approval", False):
+                return "LIVE"
+        elif state == "LIVE":
+            if metrics.get("max_dd", 0) > T.get("max_dd", 0.08):
+                return "DEPRECATED"
+        return state

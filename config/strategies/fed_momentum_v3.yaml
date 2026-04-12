@@ -1,0 +1,29 @@
+strategy_id: fed_momentum_v3
+version: 2026.04.12
+source:
+  model: lora_fedavg_fedavg_v2.pt
+  nodes:
+  - node_10
+  - node_11
+  - node_12
+  trace_id: ec8885e1-8fc7-482e-8787-30c046a6c1f1
+  exported_at: '2026-04-12T13:24:57.232052'
+performance:
+  sharpe: 1.42
+  max_drawdown: 0.1
+  win_rate: 0.58
+  total_trades: 0
+regime:
+  best: unknown
+  worst: unknown
+parameters:
+  rvol: 2.1
+  ema_fast: 9
+risk:
+  position_size: dynamic
+  atr_multiplier: 2.0
+  max_exposure_pct: 0.15
+enabled: false
+shadow_mode: true
+manual_approval: true
+shadow_compare_days: 5
