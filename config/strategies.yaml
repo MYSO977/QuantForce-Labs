@@ -1,0 +1,23 @@
+strategies:
+  - name: momentum
+    params: { threshold: 100.0 }
+  - name: mean_reversion
+    params: { lookback: 20, z_entry: 2.0 }
+  - name: etf_momentum
+    params: { lookback: 20, vol_target: 0.15 }
+  - name: futures_donchian
+    params: { entry_period: 20 }
+  - name: forex_london_breakout
+    params: { session_start: 8 }
+  - name: covered_call
+    params: { target_delta: 0.30 }
+
+aggregator:
+  min_conflict_threshold: 0.3
+  strategy_weights:
+    momentum: 0.4
+    mean_reversion: 0.2
+    etf_momentum: 0.2
+    futures_donchian: 0.1
+    forex_london_breakout: 0.1
+    covered_call: 0.0
